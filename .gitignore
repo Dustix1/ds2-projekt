@@ -1,0 +1,21 @@
+# Java
+*.class
+*.jar
+*.war
+*.ear
+bin/
+
+# Oracle/Database
+# (If you had local data files or logs)
+
+# IDEs
+.idea/
+*.iml
+.vscode/
+.project
+.classpath
+.settings/
+
+# OS
+.DS_Store
+Thumbs.db

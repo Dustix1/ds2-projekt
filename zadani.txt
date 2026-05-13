@@ -1,0 +1,226 @@
+DS2 - Cvičení 11: Transakce v C# a uložená procedura (8 b)
+============================================================
+
+
+CO ODEVZDAT
+-----------
+Konzolová aplikace v C# (.NET Framework) / Java nebo jiném
+objektovém jazyce, se strukturou odpovídající přiloženému
+vzorovému projektu StoreIS_orm. Návod dále je jen pro C#,
+řešení v jiných jazycích musí být strukrurově shodná.
+
+ZÁKAZ ORM NÁSTROJŮ
+Přístup k databázi musí být realizován výhradně přes ADO.NET
+(SqlConnection, SqlCommand, SqlDataReader, SqlTransaction)
+podle vzoru StoreIS_orm. Použití Entity Frameworku, Dapperu,
+NHibernate nebo jakéhokoli jiného ORM či micro-ORM nástroje
+znamená, že projekt bude vrácen k přepracování a to na všech
+platformách.
+
+
+POSTUP
+======
+
+1) PROJEKT
+----------
+Zkopírujte do projektu třídu Database.cs beze změny.
+Do App.config doplňte connection string. 
+
+    <connectionStrings>
+      <add name="ConnectionStringMsSql"
+           connectionString="Data Source=server;Initial Catalog=dbname;User Id=LOGIN;Password=HESLO;"
+           providerName="System.Data.SqlClient" />
+    </connectionStrings>
+
+
+2) DTO TŘÍDY (orm/dto/)
+-----------------------
+Pro každou tabulku zapojenou do transakce vytvořte DTO třídu
+s vlastnostmi odpovídajícími sloupcům:
+
+    public class MojeEntita
+    {
+        public int id_entita { get; set; }
+        public string nazev { get; set; }
+    }
+
+Nezapomeňte na typ nullable, pro pole, kde může být hodnotou i null.
+
+3) DAO TŘÍDY (orm/dao/)
+-----------------------
+Pro každou potřebnou databázovou operaci vytvořte statickou
+metodu přijímající Database pDb jako první parametr.
+Implementujte jen to, co transakce skutečně používá.
+
+INSERT s návratem generovaného klíče - primární klíč cílové
+tabulky musí být v DDL deklarován jako IDENTITY (nebo musíte
+hodnotu získávat jiným způsobem, např. ze sekvence):
+
+    private static string SqlInsert =
+        "insert into MojeEntita(nazev) output Inserted.id_entita values(@nazev);";
+
+    public static void Insert(Database pDb, MojeEntita e)
+    {
+        Database db = Database.Connect(pDb);
+        SqlCommand command = db.CreateCommand(SqlInsert);
+        PrepareCommand(command, e);
+        e.id_entita = db.ExecuteScalar(command);
+        Database.Close(pDb, db);
+    }
+
+SELECT vracející jednu hodnotu:
+
+    private static string SqlDotaz =
+        "select count(*) from MojeEntita where id = @id;";
+
+    public static int GetHodnota(Database pDb, int id)
+    {
+        Database db = Database.Connect(pDb);
+        SqlCommand command = db.CreateCommand(SqlDotaz);
+        command.Parameters.AddWithValue("@id", id);
+        int result = db.ExecuteScalar(command);
+        Database.Close(pDb, db);
+        return result;
+    }
+
+SELECT vracící seznam objektů:
+
+    private static string SqlSelectAll =
+        "select id_entita, nazev from MojeEntita order by id_entita;";
+
+    public static List<MojeEntita> GetAll(Database pDb)
+    {
+        Database db = Database.Connect(pDb);
+        SqlCommand command = db.CreateCommand(SqlSelectAll);
+        SqlDataReader reader = db.Select(command);
+
+        List<MojeEntita> list = new List<MojeEntita>();
+        while (reader.Read())
+        {
+            MojeEntita e = new MojeEntita();
+            e.id_entita = reader.GetInt32(0);
+            e.nazev = reader.GetString(1);
+            list.Add(e);
+        }
+        reader.Close();
+
+        Database.Close(pDb, db);
+        return list;
+    }
+
+
+4) TRANSAKCE V C# (TransactionsDao)
+-----------------------------------
+Implementujte svou transakci jako C# metodu. Transakce musí
+mít izolaci Serializable - ta je nastavena v
+Database.BeginTransaction().
+
+    private static string SqlInsertHlavni =
+        "insert into HlavniEntita(id_user, datum) output Inserted.id_hlavni values(@id_user, @datum);";
+    private static string SqlKontrolaStavu =
+        "select stav from StavEntita where id_entita = @id_entita;";
+
+    public static bool MojeTransakce(Database pDb, ref int? p_id_hlavni, /* parametry */)
+    {
+        Database db = Database.Connect(pDb);
+        bool ret = true;
+        try
+        {
+            db.BeginTransaction();
+
+            // vložit hlavní záznam, pokud ještě neexistuje
+            // ověřit podmínku
+            // pokud podmínka platí, provést INSERT/UPDATE vedlejšího záznamu
+
+            p_id_hlavni = /* id_hlavni nově vloženého záznamu */;
+            db.EndTransaction();
+        }
+        catch (SqlException)
+        {
+            db.Rollback();
+            ret = false;
+        }
+        Database.Close(pDb, db);
+        return ret;
+    }
+
+
+5) STORED PROCEDURE 
+---------------------------------------------
+Stejnou logiku z minispecifikace napište jako T-SQL proceduru a nasaďte ji
+na server:
+
+    create or alter procedure MojeTransakce(
+        @p_id_hlavni int out,
+        /* vstupní parametry */,
+        @p_ret bit out
+    )
+    as begin
+        set @p_ret = 0;
+        begin transaction;
+        begin try
+            -- stejná logika jako v C#
+            set @p_ret = 1; -- jedničku nahradte klíčem vloženého řádku
+            commit;
+        end try
+        begin catch
+            rollback;
+        end catch
+    end;
+
+
+6) VOLÁNÍ STORED PROCEDURE Z C# (MojeTransakce_sp)
+--------------------------------------------------
+    public static bool MojeTransakce_sp(Database pDb, ref int? p_id_hlavni, /* parametry */)
+    {
+        Database db = Database.Connect(pDb);
+        bool v_ret = false;
+
+        SqlCommand command = db.CreateCommand("MojeTransakce");
+        command.CommandType = CommandType.StoredProcedure;
+
+        SqlParameter p1 = new SqlParameter("@p_id_hlavni",
+            p_id_hlavni == null ? DBNull.Value : (object)p_id_hlavni);
+        p1.Direction = ParameterDirection.InputOutput;
+        p1.Size = sizeof(int);
+        command.Parameters.Add(p1);
+
+        // doplňte všechny vstupní parametry transakce
+        command.Parameters.AddWithValue("@p_...", ...);
+
+        SqlParameter pRet = new SqlParameter("@p_ret", SqlDbType.Bit);
+        pRet.Direction = ParameterDirection.Output;
+        command.Parameters.Add(pRet);
+
+        db.ExecuteNonQuery(command);
+
+        p_id_hlavni = Convert.ToInt32(p1.Value);
+        v_ret = (bool)pRet.Value;
+
+        Database.Close(pDb, db);
+        return v_ret;
+    }
+
+
+7) Program.cs
+-------------
+Zavolejte obě metody, každou minimálně dvakrát - poprvé
+s null (nový hlavní záznam), podruhé s existujícím id.
+Výsledky vypište:
+
+    MojeTransakce:    ret: True,  id: 1
+    MojeTransakce_sp: ret: True,  id: 2
+    MojeTransakce:    ret: True,  id: 3
+    MojeTransakce_sp: ret: False, id: null
+
+Hodnoty jsou ukázkové.
+
+
+ODEVZDÁNÍ
+=========
+  files/MojeTransakce.sql ... Stored procedure
+  orm/dto/                ... DTO třídy
+  orm/dao/                ... DAO třídy + TransactionsDao.cs
+  Program.cs              ... Volání a výpis výsledků
+
+

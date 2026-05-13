@@ -1,0 +1,10 @@
+services:
+  oracle-db:
+    image: container-registry.oracle.com/database/free:latest
+    container_name: oracle-db
+    ports:
+      - "1521:1521"
+    environment:
+      - ORACLE_PASSWORD=oracle
+    volumes:
+      - ./files/init.sql:/opt/oracle/scripts/startup/init.sql
